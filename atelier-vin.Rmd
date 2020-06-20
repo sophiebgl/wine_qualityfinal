@@ -1,0 +1,757 @@
+---
+title: "Predictive analysis of Red Wines Quality"
+author: "Sophie Bassnagel"
+date: "20/06/2020"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+    #number_sections: true
+---
+```{r initial_chunk, echo = FALSE, warning = FALSE, message = FALSE}
+library("knitr")
+opts_chunk$set(echo = TRUE, eval = TRUE, warning = FALSE, message = FALSE, cache = TRUE, fig.align = 'center', dpi = 300, out.width = '75%')
+```
+
+## Objective / Problem Statement
+
+We have a data set about red wines quality. We are going to look intothis data set variables, try to find similarities between wines as per their quality and build a predictive model about the quality of the wines.
+I used some technics that were not seen during the certificate. I learnt them in college earlier in ly life and thought it would be nice to consolidate everything here!
+
+
+```{r setup, include=FALSE}
+# Librairies
+library('caret') # split dataset into train et test samples
+library('corrplot')
+library('cowplot')
+library('dplyr') # dataframe manipulation
+library('DT') # tables visualisation
+library('factoextra')
+library('FactoMineR')
+library('ggplot2') # data visualisation
+library('pROC')
+library('randomForest')
+library('rpart')
+
+# set default ggplot theme
+theme_set(
+  theme_light(
+    base_size = 15
+  ) +
+    theme(
+      text = element_text(family = "Gibson", colour = "gray10"),
+      panel.border = element_blank(),
+      axis.line = element_line(colour = "gray50", size = .5),
+      axis.ticks = element_blank(),
+      # axis.title.y = element_text(angle = 0),
+      strip.background = element_rect(colour = "gray50", fill = "transparent", size = .7),
+      strip.text.x = element_text(colour = "gray10"),
+      legend.key.size = unit(2, "cm")
+    )
+)
+
+#Dataset
+vin <- read.csv(file = "qualitevin.csv", header = T, sep = ";")
+```
+
+## Exploratory analysis
+
+### Building the data set
+
+The table has **`r dim(vin)[1]`** observations and each one is a different type of red wine, and has **`r dim(vin)[2]`** variables.
+
+**Data**
+```{r apperçu, echo=FALSE}
+head <- head(vin)
+datatable(head, 
+          options = list(
+            scrollX = TRUE,
+            pageLength = 12, 
+            autoWidth = FALSE,
+            lengthChange = FALSE, 
+            bPaginate = FALSE, 
+            bFilter = FALSE,
+            bInfo = FALSE))
+```
+For each wine, we have its **caracteristics** (its acidity, its PH, its alcohol amount...) as well as its **quality**.  
+The first 11 variables are numerical, and give us the caracteristics of each wine.   
+The last variable, `qualiteY`, is different from the others : it takes the value 1 if the wine is good quality, 0 if not.   
+  
+This variable can help building an explicative model from the first 11 variables, explicatives.
+
+**Missing values**
+```{r names and missing values, echo=FALSE}
+na_values <- sort(sapply(vin, function(x) sum(is.na(x))), decreasing = TRUE)
+data.frame(
+  x = names(na_values),
+  y = na_values
+) %>% 
+  datatable(
+    colnames = c("Variable", 'Valeurs Manquantes'),
+    rownames = FALSE,
+    width = '50%',
+    options = list(
+      pageLength = 12, 
+      autoWidth = FALSE,
+      lengthChange = FALSE, 
+      bPaginate = FALSE, 
+      bFilter = FALSE,
+      bInfo = FALSE,
+      columnDefs = list(list(width = '30px', targets = c(0, 1), className = 'dt-center'))
+    )
+  )
+```
+
+There are no missing values in this dataset.
+
+```{r factor Y, include=FALSE}
+#Transforming qualitéY as factor
+vin$qualiteY <- factor(vin$qualiteY)
+levels(vin$qualiteY) # un vin considéré comme qualitatif est codé 1, comme mauvais 0.
+```
+
+**Proportion of the target variable**
+```{r variable cible, echo=FALSE}
+
+# This function calculate the proportion of the target variable. 
+
+prop_var_cible <- function(data) {
+datatable(data.frame(round(prop.table(table(data$qualiteY))*100,2)),
+          rownames = FALSE,
+          colnames = c('qualiteY', 'Fréquence'),
+          width = '50%',
+          options = list(
+            pageLength = 12, 
+            autoWidth = FALSE,
+            lengthChange = FALSE, 
+            bPaginate = FALSE, 
+            bFilter = FALSE,
+            bInfo = FALSE,
+            columnDefs = list(list(width = '30px', targets = c(0, 1), className = 'dt-center'))))
+}
+
+prop_var_cible(vin)
+
+```
+
+The 2 class of `qualiteY` are balances
+
+
+###Variables Distribution
+
+```{r density, echo=FALSE, out.width='100%'}
+# This function plots the density of a numeric variable.
+
+plotDensity <- function(data, var) {
+  ggplot(
+    data = data,
+    mapping = aes_string(x = var)
+  ) +
+    geom_density() +
+    labs(y = "Densité") +
+    theme(
+      axis.title.x = element_text(size = 8),
+      axis.text.x = element_text(size = 8),
+      axis.title.y = element_text(size = 8),
+      axis.text.y = element_text(size = 8)
+    )
+}
+
+density_plots <- lapply(
+  X = names(vin)[1:11],
+  FUN = function(name) plotDensity(vin, name)
+)
+plot_grid(plotlist = density_plots, nrow = 3)
+
+```
+
+Most of the variables are almost normally distributed, except for `residual.sugar` and `chloride` which are skewed on the left.
+
+### Variables correlation
+
+After studying the density of the variables, I want to study the links between the other explicatives variables. I am trying to find out if some variables are correlated, meaning if there is a link between two or more variables in a sens were their values are always:
+
+- correlated towards a similar position in the case of a positive correlation
+- correlated towards an opposite position in the case of a negative correlation
+
+
+#### Correlation matrix (Pearson)
+```{r heatmap, echo=FALSE}
+mat <- cor(vin[,-12])
+corrplot(mat,type = 'upper')
+```
+
+- There is a strong negative correlation between pH and fixed acidity, between citric.acide and volatice.acidity and between pH and citric.acid. 
+- There is a positive correlation between fixed acidity, citric acid and density.
+
+#### Graphical representation
+
+Let's look more in depths at the links between these variables to understand the nature of the correlation.
+
+```{r correlation, echo=FALSE}
+ggplot(data = vin, 
+       mapping = aes(x = fixed.acidity, y = citric.acid)) +
+  geom_point(color = 'darkblue') +
+  stat_smooth(method="lm") +
+  ggtitle('Liens entre fixed.acidity et citric.acidity', subtitle = paste('Coefficient de corrélation :', round(cor(vin$fixed.acidity, vin$citric.acid),2))) +
+  theme(plot.subtitle = element_text(hjust = 0.5))
+```
+
+
+```{r correlation 1, echo=FALSE}
+ggplot(data = vin, 
+       mapping = aes(x = fixed.acidity, y = density)) +
+  geom_point(color = 'darkred') +
+  stat_smooth(method="lm") +
+  ggtitle('Liens entre fixed.acidity et density', subtitle = paste('Coefficient de corrélation :', round(cor(vin$fixed.acidity, vin$density),2))) +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+```{r correlation 2, echo=FALSE}
+ggplot(data = vin, 
+       mapping = aes(x = fixed.acidity, y = pH)) +
+  geom_point(color = 'darkgreen') +
+  stat_smooth(method="lm") +
+  ggtitle('Liens entre fixed.acidity et pH', subtitle = paste('Coefficient de corrélation :', round(cor(vin$fixed.acidity, vin$pH),2))) +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+```{r correlation 3, echo=FALSE}
+ggplot(data = vin, 
+       mapping = aes(x = volatile.acidity, y = citric.acid)) +
+  geom_point(color = 'orange') +
+  stat_smooth(method="lm") +
+  ggtitle('Liens entre volatile.acidity et citric.acid', subtitle = paste('Coefficient de corrélation :', round(cor(vin$volatile.acidity, vin$citric.acid),2))) +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+```{r correlation 4, echo=FALSE}
+ggplot(data = vin, 
+       mapping = aes(x = volatile.acidity, y = citric.acid)) +
+  geom_point(color = 'darkgrey') +
+  stat_smooth(method="lm") +
+  ggtitle('Liens entre pH et citric.acid', subtitle = paste('Coefficient de corrélation :', round(cor(vin$pH, vin$citric.acid),2))) +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.title = element_text(hjust = 0.5)
+)
+```
+
+We can see there is a **linear** relation between these different variables.
+Let's now look at the links between these explanatory variables and the variable to explain:`qualiteY`.
+
+### Variable relations to the quality of the wine
+
+We are trying to understand if there is an influence from the variables on wine quality.
+
+
+```{r fonction boxplot, echo=FALSE}
+#' This function creates boxplots for a numeric variable.
+#'
+plotBoxplot <- function(data, var) {
+  ggplot(
+    data = data,
+    mapping = aes_string(x = "qualiteY", y = var)
+  ) +
+    geom_boxplot() +
+    ggtitle(var) +
+    theme(
+      axis.title.x = element_text(size = 8),
+      axis.text.x = element_text(size = 8),
+      axis.title.y = element_text(size = 8),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(size = 10)
+    )
+}
+```
+
+We plotted the distribution of these 11 explanatory variables depending on the quality of the wine.
+Comparing the distributions of each variable depending on `qualiteY = 0` and `qualiteY = 1`, we can visually see that the distributions are very different between `qualiteY = 0` and `qualiteY = 1` for 4 explanatory variables `volatile acidity`, `citric.acid`, `sulphate` and `alcohol`.   
+
+Thus, we are showing only these 4 variables below:
+
+```{r boxplot, echo=FALSE, out.width='100%'}
+
+box_plots <- lapply(
+  X = names(vin)[c(2,3,10,11)],
+  FUN = function(name) plotBoxplot(data = vin, var = name)
+)
+
+plot_grid(plotlist = box_plots, nrow = 2)
+
+```
+
+
+
+```{r test comparaison de moyennes, include=FALSE}
+### Test: comparison of means
+
+# 1 - Volatile acidity
+
+#Variance test
+var.test(volatile.acidity ~ qualiteY, data = vin, conf.level = 0.95)
+# Variances are significaly different and we reject H0 to the 5% threshold. 
+
+#Means test
+t.test.volatile.acidity <- t.test(volatile.acidity ~ qualiteY, alternative = 'greater', var.equal = FALSE, data = vin, conf.level = 0.95)
+# The means are significantly different and we reject H0 to the 5% threshold.
+
+# 2 - Citric acid
+
+var.test(citric.acid ~ qualiteY, data = vin, conf.level = 0.95)
+# Variances are significaly different and we reject H0 to the 5% threshold. 
+
+#Means test
+t.test.citric.acide <- t.test(citric.acid ~ qualiteY, alternative = 'less', var.equal = FALSE, data = vin, conf.level = 0.95)
+# The means are significantly different and we reject H0 to the 5% threshold.
+
+# 3 - Sulphates
+var.test(sulphates ~ qualiteY, data = vin, conf.level = 0.95)
+# Variances are significaly different and we reject H0 to the 5% threshold. 
+
+#Means test
+t.test.sulphates <- t.test(sulphates ~ qualiteY, alternative = 'less', var.equal = FALSE, data = vin, conf.level = 0.95)
+# The means are significantly different and we reject H0 to the 5% threshold.
+
+# 4 - Alcool
+var.test(alcohol ~ qualiteY, data = vin, conf.level = 0.95)
+# Variances are significaly different and we reject H0 to the 5% threshold. 
+
+#Means test
+t.test.alcool <- t.test(alcohol ~ qualiteY, alternative = 'less', var.equal = FALSE, data = vin, conf.level = 0.95)
+# The means are significantly different and we reject H0 to the 5% threshold.
+```
+
+It looks like these variable have an influence on the quality of a wine.
+
+To statiscally prove this intuition, we realised a test of the means for each explanatory variable, between `qualiteY = 0` and `qualiteY = 1`. 
+The hypothesis $H0$ of the means test is the situation were the means are equal. 
+
+Let's start for instance with `volatile.acidity`, the test will make us able to check if the mean of `volatile.acidity` for the wine quality 0 is equal to the mean of `volatile.acidity` for the wine quality 1.  
+  
+We fix the threshold at 5%. The alternative hypothesis will be rejected if the p-value is above 5%.
+
+By applying the means test on these 4 variables, here is what we conclude:
+
+The good quality wines have:
+
+- a level of **volatile acidity** below bad wines because the P-value is `r round(t.test.volatile.acidity$p.value,40)` < 5%. 
+  
+- a level of **citric acid** higher than bad wines because the P-value is `r round(t.test.citric.acide$p.value,10)` < 5%.
+  
+- a level of **sulphates** higher than bad wines because the P-value is `r round(t.test.sulphates$p.value,18)` < 5%.
+  
+- a level of **d'alcohol** higher than bad wines because the P-value is `r round(t.test.alcool$p.value,77)` < 5%.  
+  
+  
+In order to go further in the analysis, we are going to perform a principal component analysis (PCA) which will allow us to see if we can flag individuals groups and variables by lowering the dimensions.  
+
+## Multidimensionnal descriptive statistics : PCA
+
+The analysis in principal components allow to analyse and visualise a dataset with individuals described by multiple quantitative variables.
+It is therefore possible to study the similarities between individuals with a view on all variables and to understand individual profiles by lowering the dimensions.
+
+I do an PCA on this data set to understand if there is a combination of these 11 explanatory variables than can explain the wine quality.
+
+
+```{r acp model}
+acp <- PCA(X = vin, quali.sup = 12, graph = FALSE)
+```
+
+###  Analysis of proper values
+
+The variance represent the information within a dataset. The idea is to reduce the number of dimensions while not loosing too much information.
+We choose to keep 70% of the information from the data set and to reduce the number of dimensions from 11 to 4.
+
+```{r eigvalues, echo=FALSE}
+acp$eig[,2:3]
+```
+
+### Scree plot
+```{r scree plot, echo=FALSE}
+fviz_eig(acp, addlabels = TRUE)
+```
+There is no strong uncoupling on the scree plot, except between the first and the second dimension. We will stay with the analysis of the first 4 axis.
+
+###Variable analysis
+
+With a PCA, each axis is a linear combination of the variables.
+
+#### Axis 1 and 2
+```{r acp var axe 1 et 2, echo=FALSE}
+plot(acp, choix = "var", axes = c(1,2), title = 'ACP - axes 1 et 2')
+```
+The variance explained with the 2 first axis is 45%.
+
+- **AXE 1** : Axis 1 represents **wine acidity**. It set against two variables very correlated (citric acid and fixed acidity), with the pH. Un vin acide aura un pH faible pour une mesure de fixed.acidity élevée. We already saw in the correlation matrix that these variables were negatively correlated. 
+
+- **AXE 2** : Axis 2 represents the **sulfure** in the wine (Free sulfure and total.sulfure, positively correlated). These variables are negatively correlated with alcohol.
+
+#### Axis 3 and 4
+```{r acp var axes 3 et 4, echo=FALSE}
+plot(acp, choix = "var", axes = c(3,4), title = 'ACP - axes 3 et 4')
+```
+
+No variable is well represented on the axis 3, we can still see a negative correlation between `alcohol` and `volatile.acidity`.
+Axis 4 is represented by chlorides and sulfats which are positively correlated.
+
+###Individual analysis
+
+**Concentration ellipse**
+```{r ellipses, echo=FALSE}
+fviz_pca_ind(acp,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = vin$qualiteY, # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Qualité de vin",
+             title = 'Représentation des individus selon la qualité de vin -  axes 1 et 2'
+             )
+```
+
+Good quality wine have a tendancy to have a lower sulfat rate vs bad quality wines. However, acidity doesn't seem to impact wine quality. 
+
+
+```{r ellipses axes 3 et 4, echo=FALSE}
+fviz_pca_ind(acp,
+             axes = c(3,4),
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = vin$qualiteY, # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Qualité de vin",
+             title = 'Représentation des individus selon la qualité de vin - axes 3 et 4'
+             )
+```
+
+Good quality wines have an alcohol percentage higher and a lower volatile acidity vs lower quality wines.
+Some individuals are standing out : 152,1436,1477.  
+
+```{r ind représentation, eval=FALSE, include=FALSE}
+fviz_pca_ind(acp, col.ind = "cos2", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             title = 'Individual representations'
+             )
+```
+
+
+```{r ind contrib, eval=FALSE, include=FALSE}
+fviz_pca_ind(acp, col.ind = "contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             title = 'Individuals contribution'
+             )
+```
+
+These points being very represented, let's have a closer look at them to understand why they stand out.
+
+```{r vins particuliers, echo=FALSE}
+datatable(vin[c(152,1436,1477),], 
+          options = list(
+            scrollX = TRUE,
+            pageLength = 12, 
+            autoWidth = FALSE,
+            lengthChange = FALSE, 
+            bPaginate = FALSE, 
+            bFilter = FALSE,
+            bInfo = FALSE))
+```
+
+We can see that the data residual sugar (except for 152) and free sulfur are high for these 3 individuals - a lot higher than the median.
+
+## Logistisc regression
+
+The variable `qualiteY` is a binary variable which gives us the wine quality, as 0 if the wine is bad quality and 1 if it is a good quality wine. We are going to use this variable in a logistic regression to create a model able to explain a wine quality depending on its caracteristics.
+
+### Explanatory model
+
+We are trying to understand which variable are best able to explain a wine quality.
+
+```{r modele complet, echo=FALSE}
+# Full model
+model_complet_expl <- glm(formula = qualiteY~., data = vin, family = 'binomial')
+
+# Variable choosen on the AIC criteria (minimal AIC)
+model_select_expl <- step(model_complet_expl, direction = 'both', trace = FALSE) 
+```
+
+The function step allows to select a model with a step by step procedure based on minimalising the AIC criteria. It allows me to keep only the relevant variables for my model and to delete the variable that do not contribute to it or add noise only.
+
+The model keeps these variables:
+`fixed.acidity - volatile.acidity - citric.acid - chlorides - free.sulfur.dioxide`   
+`total.sulfur.dioxide - sulphates - alcohol`
+
+```{r echo=FALSE}
+summary(model_select_expl)
+```
+
+#### Analysis
+
+Alcohol is the most significant variable to forecast a wine quality. It is the variable that brings the most information. The more alcohol increases, the more the probability of having a good quality wine is increasing (positive estimate). On the contrary, the more volatile acidity increases, the more the probability of having a good quality wine is low (negative estimate).
+
+### Predictive model 
+
+If we need to predict a wine quality on new data, we will build a predictive model on a training model which will be tested on a test dataset to understand our error rate.
+
+#### Test and training samples creation
+
+The sample contains enough data, we can divide it in 2 samples for test and training.
+
+```{r echantillonage, echo=FALSE}
+# Index
+set.seed(1) # permet de rendre reproducibles les résultats
+trainIndex <- createDataPartition(vin$qualiteY, p = 0.8, list = FALSE)
+
+# Training sample
+vin_train <- vin[trainIndex,]
+
+# Test sample
+vin_test <- vin[-trainIndex,]
+```
+I make sure of the proportion of `qualiteY` in my two samples :
+
+**Train**
+```{r verification des proportions Train, echo=FALSE}
+# Proportion de la variable cible dans l'échantillon d'apprentissage
+prop_var_cible(vin_train)
+```
+**Test**
+```{r verification des proportions Test, echo=FALSE}
+# Proportion de la variable cible dans l'échantillon de test
+prop_var_cible(vin_test)
+```
+
+The proportions are equivalent.
+
+#### Model on the training sample
+
+```{r mod apprentissage}
+# Full model
+model_complet <- glm(formula = qualiteY~., data = vin_train, family = 'binomial')
+
+# Variable picked on the AIC criteria
+model_select <- step(model_complet, direction = 'both', trace = FALSE)
+```
+
+#### Model quality
+
+##### Forecast on the test sample 
+```{r predict}
+# By using the model trained on vin_train only (forecast)
+prevision <- predict(model_select, newdata = vin_test, type = 'response')
+```
+
+##### ROC curve
+
+The ROC curve (Receiver Operator Characteristic Curve) represents the ratio of true positive on the y axix vs the ratio of false positives on the y axis.  
+
+```{r ROC, echo=FALSE}
+# Forecast
+roc_prevision <- roc(vin_test$qualiteY, prevision)
+
+ggroc(roc_prevision, alpha = 0.5, colour = "red") + 
+geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  ggtitle(paste('Prévision - AUC =',round(roc_prevision$auc,2)) 
+  )
+```
+
+##### AUC
+
+The AUC (Area under the curve) gives the classification rate without error compared to a logistic model, on the test sample. It allows to compare the ROC curves between multiple models. 
+
+
+```{r AUC prev et aj, echo=FALSE}
+auc_prev <- round(auc(roc_prevision),2)
+```
+
+**AUC of the predictive model :** `r auc_prev`  
+
+
+##### Confusion matrix  with a threshold of 0.5
+```{r matrice de confusion, echo=FALSE}
+# Probabilities conversion in 0/1
+prevision_result <- as.numeric(prevision>= 0.5) 
+
+# This function creates a confusion matrix
+mat_conf <- function(prev, test) {
+  matconft <- data.frame(matrix(table(prev, test$qualiteY),nrow = 2))
+  colnames(matconft) <- c('0', '1')
+  row.names(matconft) <- c('0', '1')
+  datatable(matconft,
+          width = '30%',
+          options = list(
+            autoWidth = FALSE,
+            lengthChange = FALSE,
+            bPaginate = FALSE,
+            bFilter = FALSE,
+            bInfo = FALSE))
+}
+
+mat_conf(prevision_result, vin_test)
+
+```
+
+If I get new data, I can expect an error rate of **`r round(sum(prevision_result != vin_test$qualiteY)/nrow(vin_test)*100,2)`%** with this predictive model, and by picking a threshold of 0.5.
+
+##### Optimum threshold
+
+We are going to at the threshold that will allow us to minimize this error rate.
+```{r seuil optimal, echo=FALSE}
+coord <- coords(roc = roc_prevision, x = 'best')
+print(coord)
+```
+
+Let's fix the threshold to `r round(coord[1],2)` to create the confusion matrix.
+
+##### Confusion matrix  with a threshold of `r round(coord[1],2)`
+
+```{r mat conf seuil optimal, echo=FALSE}
+seuil <- coord[1]
+
+# Probabilities conversion 0/1
+prevision_result <- as.numeric(prevision >= seuil$threshold) 
+summary(prevision)
+# Confusion matrix
+mat_conf(prevision_result, vin_test)
+```
+At the threshold of `r round(coord[1],2)`, the error rate is **`r round(sum(prevision_result != vin_test$qualiteY)/nrow(vin_test)*100,2)`%**.
+If I get new data, I can expect an error rate of **`r round(sum(prevision_result != vin_test$qualiteY)/nrow(vin_test)*100,2)`%** with this predictive model. When we receive new data, we'll need to re-calibrate it.
+
+```{r eval=FALSE, include=FALSE}
+# accuracy / sensitivity / specificity
+confusionMatrix(data = as.factor(prevision_result), reference = vin_test$qualiteY, positive="1")
+```
+
+
+#### Residual analysis
+
+A good residual is a residual without any expored structure. Residuals need to be independant from observations.
+
+```{r analyse des résidus, echo=FALSE}
+res <- rstudent(model_select)
+
+plot(res, pch = 20, col = 'darkblue')
+abline(h = c(2,0,-2), lty = c(2,1,2), col = 'red')
+out <- which(!between(res, -2, 2))
+points(x = out, y = res[out], col = 'magenta')
+```
+
+
+```{r include=FALSE}
+
+which.max(abs(res))
+```
+We will need to re start the model without line 653.
+
+In theory, 95% of the residual from Student are within the interval [-2,2]. It is the case here as `r length(out)` residuals are outside of the interval ( `r round(length(out)/length(res)*100,2)`%).
+
+```{r analyse des résidus Pearson, eval=FALSE, include=FALSE}
+res <- residuals(model_select, type = "pearson")
+
+plot(res, pch = 20, col = 'darkblue')
+abline(h = c(2,0,-2), lty = c(2,1,2), col = 'red')
+out <- which(!between(res, -2, 2))
+points(x = out, y = res[out], col = 'magenta')
+```
+```{r eval=FALSE, include=FALSE}
+max <- which.max(abs(res)) #653
+# Il faut relancer le modèle en enlevant la ligne 653.
+
+```
+
+
+## Comparison with other models
+
+I will compare with other models to understand if they give better results than the logistic regression model.
+
+
+#### Interaction model 
+
+```{r modele interaction, echo=FALSE}
+modele_interaction <- glm(qualiteY~.^2, data = vin_train, family="binomial")
+modele_interaction_select <- step(modele_interaction, direction = 'both', trace = FALSE) 
+
+# Forecast on the test sample
+prevision_interaction <- predict(modele_interaction_select,vin_test, type="response")
+
+# AUC
+AUC.interaction <- auc(roc(vin_test$qualiteY,prevision_interaction)) 
+```
+The AUC with this model is **`r round(AUC.interaction,2)`**.
+  
+
+#### Model without correlated variables
+
+```{r modele sans les variables correlées, echo=FALSE}
+vin_train_corr <- vin_train[,c(1,2,4,5,7,8,10,11,12)]
+vin_test_corr <- vin_test[,c(1,2,4,5,7,8,10,11,12)]
+
+modele_corr <- glm(qualiteY~., data = vin_train_corr, family="binomial")
+modele_corr_select <- step(modele_corr, direction = 'both', trace = FALSE) 
+
+# Forecast on the test sample
+prevision_corr <- predict(modele_corr_select,vin_test_corr, type="response")
+
+# AUC
+AUC.corr <- auc(roc(vin_test_corr$qualiteY,prevision_corr)) 
+```
+The AUC with this model is **`r round(AUC.corr,2)`**.
+ 
+
+
+  
+#### Decision Tree
+```{r arbre, echo=FALSE}
+modele_arbre <- rpart(qualiteY~., data = vin_train)
+
+# Forecast on the test sample
+prevision_arbre <- predict(modele_arbre, vin_test, type='prob')[,2]
+
+# AUC
+AUC.tree <- auc(roc(vin_test$qualiteY,prevision_arbre)) 
+```
+The AUC with this model is **`r round(AUC.tree,2)`**.
+
+
+#### Random forest
+```{r random forest, echo=FALSE}
+foret <- randomForest(qualiteY~., vin_train)
+
+# Forecast on the test sample
+prevision_foret <- predict(foret, vin_test, type='prob')[,2]
+
+# AUC
+AUC.forest <- auc(roc(vin_test$qualiteY,prevision_foret)) 
+```
+The AUC with this model is **`r round(AUC.forest,2)`**.
+   
+     
+    
+    
+#### Best model and confusion matrix
+   
+**Random forest** is the model that allows for the best results (highest AUC).
+
+**Confusion matric** on Random Forest with a threshold of 0.5 :
+```{r random forest matconf, echo=FALSE}
+
+prevision_result_foret <- as.numeric(prevision_foret>= 0.5) 
+
+# Confusion Matrix
+mat_conf(prevision_result_foret, vin_test)
+```
+
+```{r random forest taux erreur, echo=FALSE}
+err.forest <- round(sum(prevision_result_foret != vin_test$qualiteY)/nrow(vin_test)*100,2)
+```
+With a random forest, I can expect an **error rate** of `r round(sum(prevision_result_foret != vin_test$qualiteY)/nrow(vin_test)*100,2)`% on new data.
